@@ -29,7 +29,7 @@ library(baguette)
 
 #### Reading through the data
 
-Using read.csvto read data and as I was having issue with header I decided to drop and reassign names to headers (Same dataset was used for my Project 2)
+Using read.csv to read data and as I was having issue with header I decided to drop and reassign names to headers (Same dataset was used for my Project 2)
 
 ```{r}
 # Read the CSV file
@@ -521,6 +521,6 @@ ggplot(rf_importance_df, aes(x = reorder(Variable, Importance), y = Importance))
 ## Fitting complete dataset on Random Forest model
 
 ```{r}
-final_best_model <- rf_fit
+final_best_model <- rf_final
 final_model_fit <- fit(final_best_model, data = df)
 ```
