@@ -1,0 +1,613 @@
+---
+title: "ST_558_HW9"
+author: "Jay Thakur"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+# ST 558 HW9
+
+## Reading Data
+
+##### Loading all req libraries
+
+
+
+```{r}
+library(tidymodels)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(readr)
+```
+
+
+
+#### Reading through the data
+
+Using read.csvto read data and as I was having issue with header I decided to drop and reassign names to headers (Same dataset was used for my Project 2)
+
+
+
+```{r}
+# Read the CSV file
+df <- read.csv("SeoulBikeData.csv", header = FALSE, stringsAsFactors = FALSE)
+
+# Remove the first row
+df <- df[-1, ]
+colnames(df) <- c("date", "rented_bike_count", "hour", "temperature", "humidity", 
+                  "wind_speed", "visibility", "dew_point_temp", "solar_radiation",
+                  "rainfall", "snowfall", "seasons", "holiday", "functioning_day")
+
+```
+
+
+
+## EDA
+
+#### Checking for missing values if any
+
+
+
+```{r}
+missing_summary <- df |>
+  summarise(across(everything(), ~ sum(is.na(.))))
+print(missing_summary)
+```
+
+
+
+#### Check column types and summary
+
+
+
+```{r}
+glimpse(df)
+```
+
+
+
+#### Summary statistics for numeric and categorical columns
+
+
+
+```{r}
+numeric_summary <- df |>
+  summarise(across(where(is.numeric), list(min = min, mean = mean, max = max), na.rm = TRUE))
+print(numeric_summary)
+```
+
+```{r}
+categorical_summary <- df |>
+  summarise(across(where(is.character), ~ list(unique(.))))
+print(categorical_summary)
+```
+
+
+
+#### Converting columns to appropriate type
+
+Converting date to Date type and Season, Holiday and Functioning day to factor. Rest of the columns should be numeric.
+
+
+
+```{r}
+df <- df |>
+  mutate(
+    date = as.Date(date, format = "%d/%m/%Y"),
+    seasons = factor(seasons),
+    holiday = factor(holiday),
+    functioning_day = factor(functioning_day)
+  )
+
+df <- df |>
+  mutate(across(c(rented_bike_count, hour, temperature, humidity, wind_speed,
+                  visibility, dew_point_temp, solar_radiation, 
+                  rainfall, snowfall), as.numeric))
+
+```
+
+
+
+## Split the Data
+
+#### Splitting into Training and Test Sets
+
+Using 75/25 split to split data into Training and Testing.
+
+
+
+```{r}
+set.seed(123)
+data_split <- initial_split(df, prop = 0.75, strata = seasons)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+
+
+#### Creating 10 cross-validation folds for training data which will be used for fitting and validation.
+
+
+
+```{r}
+cv_folds <- vfold_cv(train_data, v = 10)
+```
+
+
+
+## Fitting MLR Models
+
+#### Creating Recipe 1
+
+Creating day of week variable to get weekday and weekend, converting cat varibles to dummy and normalizing numric variables.
+
+
+
+```{r}
+
+recipe1 <- recipe(rented_bike_count ~ ., data = train_data) |>
+  step_date(date, features = c("dow"), label = FALSE) |>
+  step_mutate(
+    day_type = factor(
+      if_else(date_dow %in% c(1, 7), "weekend", "weekday"),
+      levels = c("weekday", "weekend")
+    )
+  ) |>
+  step_rm(date, date_dow) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_lincomb(all_predictors())
+
+prepped_recipe <- prep(recipe1, training = train_data)
+baked_data <- bake(prepped_recipe, new_data = NULL)
+glimpse(baked_data)
+
+```
+
+
+
+#### Creating Recipe 2
+
+Adding interatction between mentioned variables.
+
+
+
+```{r}
+recipe2 <- recipe(rented_bike_count ~ ., data = train_data) |>
+  step_date(date, features = c("dow"), label = FALSE) |>
+  step_mutate(
+    day_type = factor(
+      if_else(date_dow %in% c(1, 7), "weekend", "weekday"),
+      levels = c("weekday", "weekend")
+    )
+  ) |>
+  step_rm(date, date_dow) |>
+  step_interact(terms = ~ starts_with("seasons"):starts_with("holiday")) |>
+  step_interact(terms = ~ temperature:starts_with("seasons")) |>
+  step_interact(terms = ~ temperature:rainfall) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_lincomb(all_predictors())
+
+prepped_recipe <- prep(recipe2, training = train_data)
+baked_data <- bake(prepped_recipe, new_data = NULL)
+glimpse(baked_data)
+```
+
+
+
+#### Creating Recipe 3
+
+Adding 2nd degree poly term for each numric variable.
+
+
+
+```{r}
+numeric_vars <- c(
+  "hour",
+  "temperature",
+  "humidity",
+  "wind_speed",
+  "visibility",
+  "dew_point_temp",
+  "solar_radiation",
+  "rainfall",
+  "snowfall"
+)
+
+recipe3 <- recipe2 |>
+  step_poly(all_of(numeric_vars), degree = 2)
+
+prepped_recipe <- prep(recipe3, training = train_data)
+baked_data <- bake(prepped_recipe, new_data = NULL)
+glimpse(baked_data)
+```
+
+
+
+#### Setting up Linear regression model
+
+
+
+```{r}
+lm_model <- linear_reg() |>
+  set_engine("lm")
+```
+
+```{r}
+workflow1 <- workflow() |>
+  add_model(lm_model) |>
+  add_recipe(recipe1)
+
+workflow2 <- workflow() |>
+  add_model(lm_model) |>
+  add_recipe(recipe2)
+
+workflow3 <- workflow() |>
+  add_model(lm_model) |>
+  add_recipe(recipe3)
+```
+
+
+
+#### Fitting training data on each model of receipe
+
+
+
+```{r}
+set.seed(123)
+results1 <- fit_resamples(
+  workflow1,
+  resamples = cv_folds,
+  metrics = metric_set(rmse)
+)
+
+results2 <- fit_resamples(
+  workflow2,
+  resamples = cv_folds,
+  metrics = metric_set(rmse)
+)
+
+results3 <- fit_resamples(
+  workflow3,
+  resamples = cv_folds,
+  metrics = metric_set(rmse)
+)
+```
+
+
+
+#### Analyzing performance metric of each model
+
+
+
+```{r}
+collect_metrics(results1)
+collect_metrics(results2)
+collect_metrics(results3)
+```
+
+
+
+#### Choice of Final Model
+
+As per above metric we can see that Third model has less RMSE value and standard error value compared to other two, Hence I will be using third model for fitting whole training set and testing.
+
+
+
+```{r}
+final_fit <- last_fit(workflow3, split = data_split)
+```
+
+```{r}
+final_fit |>
+  collect_metrics()
+```
+
+
+
+As we can see RMSE value we get here is less than CV RMSE of all 3 models. Though R-square value indicates mid-level generalization of data.
+
+
+
+```{r}
+final_model <- extract_fit_parsnip(final_fit$.workflow[[1]])
+
+tidy(final_model)
+```
+
+
+
+## Model Training
+
+
+
+```{r}
+library(tidymodels)
+library(dplyr)
+library(glmnet)          # For LASSO
+library(rpart)           # For regression trees
+library(ranger)          # For random forest
+library(baguette)           # For bagged trees
+library(ggplot2)
+```
+
+
+
+
+### LASSO Model
+Tuning Lasso model and using recipe3. Selecting best model based on RMSE metric using CV and then fitting on training data.
+
+
+
+```{r}
+lasso_spec <- linear_reg(penalty = tune(), mixture = 1) %>% 
+  set_engine("glmnet")
+
+lasso_workflow <- workflow() %>%
+  add_recipe(recipe3) %>%
+  add_model(lasso_spec)
+
+# Tuning penalty
+lasso_tune <- tune_grid(
+  lasso_workflow,
+  resamples = cv_folds,
+  grid = 20,
+  metrics = metric_set(rmse, mae)
+)
+
+lasso_best <- select_best(lasso_tune, metric = "rmse")
+
+lasso_final <- finalize_workflow(lasso_workflow, lasso_best)
+lasso_fit <- fit(lasso_final, data = train_data)
+
+```
+
+
+
+### Regression Tree
+Here the I am skipping interact step for recipe as it will introduce multi collinearity in modela dn Regression tree will take time for fitting data. Setting engine 'rpart' and choosing RMSE to decide best fit.
+
+
+
+
+```{r}
+
+# Create a new recipe for tree-based models
+recipe_tree <- recipe(rented_bike_count ~ ., data = train_data) |>
+  step_date(date, features = c("dow"), label = FALSE) |>
+  step_mutate(
+    day_type = factor(
+      if_else(date_dow %in% c(1, 7), "weekend", "weekday"),
+      levels = c("weekday", "weekend")
+    )
+  ) |>
+  step_rm(date, date_dow) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_lincomb(all_predictors()) |>
+  step_poly(all_of(numeric_vars), degree = 2)
+
+
+tree_spec <- decision_tree(cost_complexity = tune()) %>% 
+  set_engine("rpart") %>% 
+  set_mode("regression")
+
+tree_workflow <- workflow() %>%
+  add_recipe(recipe_tree) %>%
+  add_model(tree_spec)
+
+tree_tune <- tune_grid(
+  tree_workflow,
+  resamples = cv_folds,
+  grid = 20,
+  metrics = metric_set(rmse, mae)
+)
+
+tree_best <- select_best(tree_tune, metric = "rmse")
+tree_final <- finalize_workflow(tree_workflow, tree_best)
+tree_fit <- fit(tree_final, data = train_data)
+```
+
+
+
+### Bagged Tree
+I am using same recipe from above and selecting best fit based on RMSE
+
+
+
+```{r}
+bag_spec <- bag_tree(tree_depth = 5, min_n = 10, cost_complexity = tune()) |>
+  set_engine("rpart") |>
+  set_mode("regression")
+
+bag_wkf <- workflow() |>
+  add_recipe(recipe_tree) |>
+  add_model(bag_spec)
+
+bag_fit <- tune_grid(
+  bag_wkf,
+  resamples = cv_folds,
+  grid = grid_regular(cost_complexity(), levels = 15),
+  metrics = metric_set(rmse, mae)
+)
+
+# Check metrics
+bag_fit |>
+  collect_metrics() |>
+  filter(.metric == "rmse") |>
+  arrange(mean)
+
+bag_best_params <- select_best(bag_fit, metric ="rmse")
+
+bag_final_wkf <- bag_wkf |>
+  finalize_workflow(bag_best_params)
+
+bagged_fit <- bag_final_wkf |>
+  fit(data = train_data)
+
+```
+
+
+
+### Random Forest
+I am setting tree param value is 1000 and importance as impurity for visualization. Using recipe1 for easier fir and selecting best fir based on RMSE.
+
+
+
+```{r}
+rf_spec <- rand_forest(mtry = tune(), trees = 1000, min_n = tune()) %>% 
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("regression")
+
+rf_workflow <- workflow() %>%
+  add_recipe(recipe1) %>%
+  add_model(rf_spec)
+
+rf_tune <- tune_grid(
+  rf_workflow,
+  resamples = cv_folds,
+  grid = 20,
+  metrics = metric_set(rmse, mae)
+)
+
+rf_best <- select_best(rf_tune, metric ="rmse")
+rf_final <- finalize_workflow(rf_workflow, rf_best)
+rf_fit <- fit(rf_final, data = train_data)
+```
+
+
+
+### Compare all models
+Here I wrote a function which will fit the model on test data and return RMSE and MSE. And using that function I fitted all function and displayed the metrics.
+
+
+
+```{r}
+# Extract the fitted workflow from final_fit
+final_workflow <- extract_workflow(final_fit)
+
+
+# Adjusted evaluate_model function
+evaluate_model <- function(model, test_data) {
+  predictions <- predict(model, test_data) %>%
+    bind_cols(test_data) %>%
+    mutate(
+      error = rented_bike_count - .pred,
+      abs_error = abs(error)
+    )
+  metrics <- predictions %>%
+    summarise(
+      rmse = sqrt(mean(error^2)),
+      mae = mean(abs_error)
+    )
+  return(metrics)
+}
+
+
+# Evaluate all models
+metrics_mlr <- evaluate_model(final_workflow, test_data)
+metrics_lasso <- evaluate_model(lasso_fit, test_data)
+metrics_tree <- evaluate_model(tree_fit, test_data)
+metrics_bagged <- evaluate_model(bagged_fit, test_data)
+metrics_rf <- evaluate_model(rf_fit, test_data)
+```
+
+```{r}
+all_metrics <- bind_rows(
+  mlr = metrics_mlr,
+  lasso = metrics_lasso,
+  tree = metrics_tree,
+  bagged = metrics_bagged,
+  rf = metrics_rf,
+  .id = "model"
+)
+
+print(all_metrics)
+
+```
+
+
+
+## Visualization
+
+### LASSO Coefficients.
+
+
+
+```{r}
+lasso_coefs <- tidy(lasso_fit)
+ggplot(lasso_coefs, aes(x = term, y = estimate)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "LASSO Coefficients")
+
+```
+
+
+
+### Final fit plot of Regression tree model
+
+
+```{r}
+rpart.plot::rpart.plot(extract_fit_parsnip(tree_fit)$fit)
+```
+
+
+
+### Variable importance plot of random forest
+
+
+```{r}
+# Load necessary libraries
+library(tidymodels)
+library(ggplot2)
+library(ranger)
+
+# Extract the fitted parsnip model from rf_fit
+rf_parsnip_model <- extract_fit_parsnip(rf_fit)
+
+# Access the underlying ranger model
+rf_ranger_model <- rf_parsnip_model$fit
+
+# Check the class to ensure it's a ranger object
+class(rf_ranger_model)
+# Should output: [1] "ranger"
+
+# Get variable importance
+rf_importance <- ranger::importance(rf_ranger_model)
+
+# Create a data frame
+rf_importance_df <- data.frame(
+  Variable = names(rf_importance),
+  Importance = rf_importance
+)
+
+# Plot variable importance using ggplot2
+ggplot(rf_importance_df, aes(x = reorder(Variable, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Random Forest Variable Importance",
+    x = "Variables",
+    y = "Importance"
+  ) +
+  theme_minimal()
+```
+
+
+
+## Fitting complete dataset on Random Forest model
+
+
+```{r}
+final_best_model <- rf_fit
+final_model_fit <- fit(final_best_model, data = df)
+
+```
+
