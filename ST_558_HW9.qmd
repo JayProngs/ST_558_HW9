@@ -9,6 +9,8 @@ editor_options:
 
 # ST 558 HW9
 
+From Model Training, Homework 9 starts. Everything else is preprocessing and uses Variables from Homework 8.
+
 ## Reading Data
 
 ##### Loading all req libraries
@@ -19,6 +21,10 @@ library(dplyr)
 library(ggplot2)
 library(lubridate)
 library(readr)
+library(ranger)
+library(glmnet)
+library(rpart)
+library(baguette)
 ```
 
 #### Reading through the data
@@ -259,18 +265,9 @@ tidy(final_model)
 
 ## Model Training
 
-```{r}
-library(tidymodels)
-library(dplyr)
-library(glmnet)          # For LASSO
-library(rpart)           # For regression trees
-library(ranger)          # For random forest
-library(baguette)           # For bagged trees
-library(ggplot2)
-```
-
 
 ### LASSO Model
+
 Tuning Lasso model and using recipe3. Selecting best model based on RMSE metric using CV and then fitting on training data.
 
 ```{r}
@@ -281,7 +278,6 @@ lasso_workflow <- workflow() %>%
   add_recipe(recipe3) %>%
   add_model(lasso_spec)
 
-# Tuning penalty
 lasso_tune <- tune_grid(
   lasso_workflow,
   resamples = cv_folds,
@@ -297,12 +293,10 @@ lasso_fit <- fit(lasso_final, data = train_data)
 ```
 
 ### Regression Tree
+
 Here the I am skipping interact step for recipe as it will introduce multi collinearity in modela dn Regression tree will take time for fitting data. Setting engine 'rpart' and choosing RMSE to decide best fit.
 
-
 ```{r}
-
-# Create a new recipe for tree-based models
 recipe_tree <- recipe(rented_bike_count ~ ., data = train_data) |>
   step_date(date, features = c("dow"), label = FALSE) |>
   step_mutate(
@@ -339,7 +333,8 @@ tree_fit <- fit(tree_final, data = train_data)
 ```
 
 ### Bagged Tree
-I am using same recipe from above and selecting best fit based on RMSE
+
+I am using same recipe from above and selecting best fit based on RMSE.
 
 ```{r}
 bag_spec <- bag_tree(tree_depth = 5, min_n = 10, cost_complexity = tune()) |>
@@ -357,7 +352,6 @@ bag_fit <- tune_grid(
   metrics = metric_set(rmse, mae)
 )
 
-# Check metrics
 bag_fit |>
   collect_metrics() |>
   filter(.metric == "rmse") |>
@@ -370,10 +364,10 @@ bag_final_wkf <- bag_wkf |>
 
 bagged_fit <- bag_final_wkf |>
   fit(data = train_data)
-
 ```
 
 ### Random Forest
+
 I am setting tree param value is 1000 and importance as impurity for visualization. Using recipe1 for easier fir and selecting best fir based on RMSE.
 
 ```{r}
@@ -398,14 +392,12 @@ rf_fit <- fit(rf_final, data = train_data)
 ```
 
 ### Compare all models
+
 Here I wrote a function which will fit the model on test data and return RMSE and MSE. And using that function I fitted all function and displayed the metrics.
 
 ```{r}
-# Extract the fitted workflow from final_fit
 final_workflow <- extract_workflow(final_fit)
 
-
-# Adjusted evaluate_model function
 evaluate_model <- function(model, test_data) {
   predictions <- predict(model, test_data) %>%
     bind_cols(test_data) %>%
@@ -421,8 +413,6 @@ evaluate_model <- function(model, test_data) {
   return(metrics)
 }
 
-
-# Evaluate all models
 metrics_mlr <- evaluate_model(final_workflow, test_data)
 metrics_lasso <- evaluate_model(lasso_fit, test_data)
 metrics_tree <- evaluate_model(tree_fit, test_data)
@@ -446,7 +436,23 @@ print(all_metrics)
 
 ## Visualization
 
-### LASSO Coefficients.
+### Final Coefficient Table
+
+#### MLR Model
+
+Below shoes coefficient table for MLR Model:
+
+```{r}
+final_model <- extract_fit_parsnip(final_fit$.workflow[[1]])
+
+mlr_coefs <- tidy(final_model)
+print(mlr_coefs)
+```
+
+
+#### LASSO Coefficients.
+
+Below is the coefficient table and plot for LASSO Model.
 
 ```{r}
 lasso_coefs <- tidy(lasso_fit)
@@ -454,46 +460,58 @@ ggplot(lasso_coefs, aes(x = term, y = estimate)) +
   geom_col() +
   coord_flip() +
   labs(title = "LASSO Coefficients")
-
 ```
 
+```{r}
+print(lasso_coefs)
+```
+
+
 ### Final fit plot of Regression tree model
+
 ```{r}
 rpart.plot::rpart.plot(extract_fit_parsnip(tree_fit)$fit)
 ```
 
-### Variable importance plot of random forest
-```{r}
-# Load necessary libraries
-library(tidymodels)
-library(ggplot2)
-library(ranger)
+### Variable importance plot of Bagged Tree
 
-# Extract the fitted parsnip model from rf_fit
+```{r}
+vi_tibble <- bagged_fit$fit$fit$fit$imp 
+vi_tibble <- vi_tibble %>% arrange(desc(value))
+
+ggplot(vi_tibble, aes(x = reorder(term, value), y = value)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Bagged Tree Variable Importance Plot",
+    x = "Variable",
+    y = "Importance Value"
+  ) +
+  theme_minimal()
+```
+
+
+
+### Variable importance plot of random forest
+
+```{r}
+
 rf_parsnip_model <- extract_fit_parsnip(rf_fit)
 
-# Access the underlying ranger model
 rf_ranger_model <- rf_parsnip_model$fit
 
-# Check the class to ensure it's a ranger object
-class(rf_ranger_model)
-# Should output: [1] "ranger"
-
-# Get variable importance
 rf_importance <- ranger::importance(rf_ranger_model)
 
-# Create a data frame
 rf_importance_df <- data.frame(
   Variable = names(rf_importance),
   Importance = rf_importance
 )
 
-# Plot variable importance using ggplot2
 ggplot(rf_importance_df, aes(x = reorder(Variable, Importance), y = Importance)) +
   geom_bar(stat = "identity", fill = "steelblue") +
   coord_flip() +
   labs(
-    title = "Random Forest Variable Importance",
+    title = "Random Forest Variable Importance Plot",
     x = "Variables",
     y = "Importance"
   ) +
@@ -501,9 +519,8 @@ ggplot(rf_importance_df, aes(x = reorder(Variable, Importance), y = Importance))
 ```
 
 ## Fitting complete dataset on Random Forest model
+
 ```{r}
 final_best_model <- rf_fit
 final_model_fit <- fit(final_best_model, data = df)
-
 ```
-
